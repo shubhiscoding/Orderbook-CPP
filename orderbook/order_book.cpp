@@ -7,16 +7,16 @@
 using namespace std;
 
 struct Order{
-    uint64_t qty;
-    uint64_t orderId;
+    uint64_t order_id;
+    bool is_buy;
     double price;
-    bool isbuy;
+    uint64_t quantity;
     uint64_t timestamp_ns;
 };
 
 struct PriceLevel{
     double price;
-    uint64_t qty;
+    uint64_t total_quantity;
 };
 
 struct DescendingCompare {
@@ -45,11 +45,11 @@ class OrderBook {
 public:
     // Insert a new order into the book
     void add_order(const Order& order){
-        order_lookup[order.orderId] = order;
-        if(order.isbuy){
-            buy_order.insert(&order_lookup[order.orderId]);
+        order_lookup[order.order_id] = order;
+        if(order.is_buy){
+            buy_order.insert(&order_lookup[order.order_id]);
         } else {
-            sell_order.insert(&order_lookup[order.orderId]);
+            sell_order.insert(&order_lookup[order.order_id]);
         }
         match();
     }
@@ -60,7 +60,7 @@ public:
             return false;
         }
         Order* ord = &(order_lookup[order_id]);
-        if(ord->isbuy){
+        if(ord->is_buy){
             buy_order.erase(ord);
         }else{
             sell_order.erase(ord);
@@ -73,16 +73,16 @@ public:
     bool amend_order(uint64_t order_id, double new_price, uint64_t new_quantity){
         if(order_lookup.find(order_id) != order_lookup.end()){
             Order* ord = &(order_lookup[order_id]);
-            if(ord->isbuy){
+            if(ord->is_buy){
                 buy_order.erase(ord);
             }else{
                 sell_order.erase(ord);
             }
 
             ord->price = new_price;
-            ord->qty = new_quantity;
+            ord->quantity = new_quantity;
 
-            if(ord->isbuy){
+            if(ord->is_buy){
                 buy_order.insert(ord);
             }else{
                 sell_order.insert(ord);
@@ -115,10 +115,10 @@ public:
                     if (bid_levels_added >= depth) break;
                 }
                 current_bid_price = order->price;
-                current_bid_qty = order->qty;
+                current_bid_qty = order->quantity;
             } else {
                 // Same price level, accumulate quantity
-                current_bid_qty += order->qty;
+                current_bid_qty += order->quantity;
             }
         }
         
@@ -142,9 +142,9 @@ public:
                     if (ask_levels_added >= depth) break;
                 }
                 current_ask_price = order->price;
-                current_ask_qty = order->qty;
+                current_ask_qty = order->quantity;
             } else {
-                current_ask_qty += order->qty;
+                current_ask_qty += order->quantity;
             }
         }
         
@@ -162,8 +162,8 @@ public:
             // Print from map1 if available
             if (it1 != buy_order.end()) {
                 const Order* order = *it1;
-                std::cout << "Bid orderId: " << order->orderId << std::endl;
-                cout << "Price: " << order->price <<" , Quantity: "<<order->qty <<endl;
+                std::cout << "Bid orderId: " << order->order_id << std::endl;
+                cout << "Price: " << order->price <<" , Quantity: "<<order->quantity <<endl;
                 cout << "" <<endl;
                 ++it1;
                 ++count;
@@ -174,8 +174,8 @@ public:
             if (it2 != sell_order.end()) {
                 const Order* order = *it2;
                 cout << "" <<endl;
-                std::cout << "Ask orderId: " << order->orderId << std::endl;
-                cout << "Price: " << order->price <<" , Quantity: "<<order->qty <<endl;
+                std::cout << "Ask orderId: " << order->order_id << std::endl;
+                cout << "Price: " << order->price <<" , Quantity: "<<order->quantity <<endl;
                 ++it2;
                 ++count;
             }
@@ -184,21 +184,21 @@ public:
     };
 
     void confirm_order(Order * bid, Order* ask){
-        cout << "Executed " << "Bid Order of Id: "<< bid->orderId <<" and price: " << bid->price 
-        << " for Ask order of Id: "<< ask->orderId <<" and price: " << ask->price << endl;
-        if(bid->qty < ask->qty){
+        cout << "Executed " << "Bid Order of Id: "<< bid->order_id <<" and price: " << bid->price 
+        << " for Ask order of Id: "<< ask->order_id <<" and price: " << ask->price << endl;
+        if(bid->quantity < ask->quantity){
             buy_order.erase(bid);
-            ask->qty -= bid->qty;
-            order_lookup.erase(bid->orderId);
-        }else if(bid->qty > ask->qty){
+            ask->quantity -= bid->quantity;
+            order_lookup.erase(bid->order_id);
+        }else if(bid->quantity > ask->quantity){
             sell_order.erase(ask);
-            bid->qty -= ask->qty;
-            order_lookup.erase(ask->orderId);
-        }else if(bid->qty == ask->qty){
+            bid->quantity -= ask->quantity;
+            order_lookup.erase(ask->order_id);
+        }else if(bid->quantity == ask->quantity){
             buy_order.erase(bid);
-            order_lookup.erase(bid->orderId);
+            order_lookup.erase(bid->order_id);
             sell_order.erase(ask);
-            order_lookup.erase(ask->orderId);
+            order_lookup.erase(ask->order_id);
         }
     }
 
@@ -212,12 +212,12 @@ public:
             Order* bid = *it1;
             Order* ask = *it2;
 
-            if(bid->price < ask->price){
-                return;
-            }else{
+            if(bid->price >= ask->price){
                 cout << "===============================" << endl;
                 confirm_order(bid, ask);
                 cout << "===============================" << endl;
+            }else{
+                return;
             }
         }
     }
@@ -231,8 +231,8 @@ public:
         cout << "========================"<< endl;
         cout << "Order ID: " << orderId << endl;
         cout << "Buy "
-             << (ord.isbuy ? "Yes" : "No") << ", Price: " << ord.price
-             << ", Quantity: " << ord.qty << ", Timestamp: " << ord.timestamp_ns << endl;
+             << (ord.is_buy ? "Yes" : "No") << ", Price: " << ord.price
+             << ", Quantity: " << ord.quantity << ", Timestamp: " << ord.timestamp_ns << endl;
         cout << "========================"<< endl;
     }
 };
@@ -245,10 +245,10 @@ int main(){
     
     // Test 1: Add some buy orders
     cout << "1. Adding buy orders:" << endl;
-    Order buy1 = {100, 1001, 50.25, true, 1000000000}; // Buy 100 @ 50.25
-    Order buy4 = {200, 1011, 50.25, true, 1000000010}; // Buy 100 @ 50.25
-    Order buy2 = {200, 1002, 50.50, true, 1000000001}; // Buy 200 @ 50.50
-    Order buy3 = {150, 1003, 50.00, true, 1000000002}; // Buy 150 @ 50.00
+    Order buy1 = {1001, true, 50.25, 100, 1000000000}; // order_id, is_buy, price, quantity, timestamp
+    Order buy4 = {1011, true, 50.25, 200, 1000000010}; // order_id, is_buy, price, quantity, timestamp
+    Order buy2 = {1002, true, 50.50, 200, 1000000001}; // order_id, is_buy, price, quantity, timestamp
+    Order buy3 = {1003, true, 50.00, 150, 1000000002}; // order_id, is_buy, price, quantity, timestamp
     
     orderBook.add_order(buy1);
     orderBook.add_order(buy2);
@@ -262,10 +262,10 @@ int main(){
     
     // Test 2: Add some sell orders (no matching yet)
     cout << "2. Adding sell orders (higher prices, no matches):" << endl;
-    Order sell1 = {80, 2001, 51.00, false, 1000000003}; // Sell 80 @ 51.00
-    Order sell2 = {120, 2002, 51.25, false, 1000000004}; // Sell 120 @ 51.25
-    Order sell3 = {90, 2003, 50.75, false, 1000000005}; // Sell 90 @ 50.75
-    Order sell4 = {190, 2004, 50.95, false, 1000000015}; // Sell 90 @ 50.75
+    Order sell1 = {2001, false, 51.00, 80, 1000000003}; // order_id, is_buy, price, quantity, timestamp
+    Order sell2 = {2002, false, 51.25, 120, 1000000004}; // order_id, is_buy, price, quantity, timestamp
+    Order sell3 = {2003, false, 50.75, 90, 1000000005}; // order_id, is_buy, price, quantity, timestamp
+    Order sell4 = {2004, false, 50.95, 190, 1000000015}; // order_id, is_buy, price, quantity, timestamp
     
     orderBook.add_order(sell1);
     orderBook.add_order(sell2);
@@ -286,19 +286,19 @@ int main(){
     cout << "==========Top 4 Aggregated Bids:==========" << endl;
     cout << "" << endl;
     for (const auto& bid : bids) {
-        cout << "  Price: " << bid.price << ", Quantity: " << bid.qty << endl;
+        cout << "  Price: " << bid.price << ", Quantity: " << bid.total_quantity << endl;
     }
     
     cout << "==========Top 4 Aggregated Asks:==========" << endl;
     cout << "" << endl;
     for (const auto& ask : asks) {
-        cout << "  Price: " << ask.price << ", Quantity: " << ask.qty << endl;
+        cout << "  Price: " << ask.price << ", Quantity: " << ask.total_quantity << endl;
     }
     cout << endl;
     
     // Test 4: Add a sell order that will match
-    cout << "4. Adding a sell order (id: 2004, qty: 50, price: 50.25) that should match:" << endl;
-    Order sell_match = {50, 2004, 50.25, false, 1000000006}; // Sell 50 @ 50.25
+    cout << "4. Adding a sell order (id: 2005, qty: 50, price: 50.25) that should match:" << endl;
+    Order sell_match = {2005, false, 50.25, 50, 1000000006}; // order_id, is_buy, price, quantity, timestamp
     orderBook.add_order(sell_match);
     
     cout << "==========Book state after matching:==========" << endl;
@@ -334,8 +334,8 @@ int main(){
     
     // Test 7: Add more orders to trigger more matches
     cout << "7. Adding aggressive orders to trigger matches:" << endl;
-    Order aggressive_buy = {200, 3001, 52.00, true, 1000000007}; // High buy price
-    Order aggressive_sell = {100, 3002, 49.00, false, 1000000008}; // Low sell price
+    Order aggressive_buy = {3001, true, 52.00, 200, 1000000007}; // order_id, is_buy, price, quantity, timestamp
+    Order aggressive_sell = {3002, false, 49.00, 100, 1000000008}; // order_id, is_buy, price, quantity, timestamp
     
     cout << "Adding aggressive buy order (price: 52.00)..." << endl;
     orderBook.add_order(aggressive_buy);
