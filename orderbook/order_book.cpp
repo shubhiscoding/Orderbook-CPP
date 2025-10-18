@@ -21,14 +21,20 @@ struct PriceLevel{
 
 struct DescendingCompare {
     bool operator()(const Order* lhs, const Order* rhs) const {
-        return lhs->price > rhs->price;
+        if (lhs->price != rhs->price) {
+            return lhs->price > rhs->price;
+        }
+        return lhs->timestamp_ns < rhs->timestamp_ns;
     }
 };
 
 
 struct AscendingCompare {
     bool operator()(const Order* lhs, const Order* rhs) const {
-        return lhs->price < rhs->price;
+        if (lhs->price != rhs->price) {
+            return lhs->price < rhs->price;
+        }
+        return lhs->timestamp_ns < rhs->timestamp_ns;
     }
 };
 
@@ -42,7 +48,7 @@ public:
         order_lookup[order.orderId] = order;
         if(order.isbuy){
             buy_order.insert(&order_lookup[order.orderId]);
-        }else{
+        } else {
             sell_order.insert(&order_lookup[order.orderId]);
         }
         match();
@@ -92,22 +98,60 @@ public:
         bids.clear();
         asks.clear();
 
-        // Iterate top 'depth' bids
-        size_t count = 0;
-        for (auto it = buy_order.begin(); it != buy_order.end() && count < depth; ++it, ++count) {
+        // Aggregate bids while iterating (already in descending price order)
+        double current_bid_price = -1;
+        uint64_t current_bid_qty = 0;
+        size_t bid_levels_added = 0;
+        
+        for (auto it = buy_order.begin(); it != buy_order.end() && bid_levels_added < depth; ++it) {
             const Order* order = *it;
-            bids.push_back(PriceLevel{order->price, order->qty});
-        }
-
-        // For asks, assuming another std::set<Order*, AscendingCompare> ask_order;
-        count = 0;
-        for (auto it = sell_order.begin(); it != sell_order.end() && count < depth; ++it, ++count) {
-            const Order* order = *it;
-            asks.push_back(PriceLevel{order->price, order->qty});
+            
+            if (order->price != current_bid_price) {
+                // New price level
+                if (current_bid_price != -1) {
+                    // Add previous level
+                    bids.push_back({current_bid_price, current_bid_qty});
+                    bid_levels_added++;
+                    if (bid_levels_added >= depth) break;
+                }
+                current_bid_price = order->price;
+                current_bid_qty = order->qty;
+            } else {
+                // Same price level, accumulate quantity
+                current_bid_qty += order->qty;
+            }
         }
         
-    };
+        // Don't forget the last level
+        if (current_bid_price != -1 && bid_levels_added < depth) {
+            bids.push_back({current_bid_price, current_bid_qty});
+        }
 
+        // Similar logic for asks
+        double current_ask_price = -1;
+        uint64_t current_ask_qty = 0;
+        size_t ask_levels_added = 0;
+        
+        for (auto it = sell_order.begin(); it != sell_order.end() && ask_levels_added < depth; ++it) {
+            const Order* order = *it;
+            
+            if (order->price != current_ask_price) {
+                if (current_ask_price != -1) {
+                    asks.push_back({current_ask_price, current_ask_qty});
+                    ask_levels_added++;
+                    if (ask_levels_added >= depth) break;
+                }
+                current_ask_price = order->price;
+                current_ask_qty = order->qty;
+            } else {
+                current_ask_qty += order->qty;
+            }
+        }
+        
+        if (current_ask_price != -1 && ask_levels_added < depth) {
+            asks.push_back({current_ask_price, current_ask_qty});
+        }
+    }
     // // Print current state of the order book
     void print_book(size_t depth = 10) const{
         auto it1 = buy_order.begin();
@@ -202,12 +246,14 @@ int main(){
     // Test 1: Add some buy orders
     cout << "1. Adding buy orders:" << endl;
     Order buy1 = {100, 1001, 50.25, true, 1000000000}; // Buy 100 @ 50.25
+    Order buy4 = {200, 1011, 50.25, true, 1000000010}; // Buy 100 @ 50.25
     Order buy2 = {200, 1002, 50.50, true, 1000000001}; // Buy 200 @ 50.50
     Order buy3 = {150, 1003, 50.00, true, 1000000002}; // Buy 150 @ 50.00
     
     orderBook.add_order(buy1);
     orderBook.add_order(buy2);
     orderBook.add_order(buy3);
+    orderBook.add_order(buy4);
     
     cout << "==========Book state after adding buy orders:==========" << endl;
     cout << "" << endl;
@@ -219,18 +265,39 @@ int main(){
     Order sell1 = {80, 2001, 51.00, false, 1000000003}; // Sell 80 @ 51.00
     Order sell2 = {120, 2002, 51.25, false, 1000000004}; // Sell 120 @ 51.25
     Order sell3 = {90, 2003, 50.75, false, 1000000005}; // Sell 90 @ 50.75
+    Order sell4 = {190, 2004, 50.95, false, 1000000015}; // Sell 90 @ 50.75
     
     orderBook.add_order(sell1);
     orderBook.add_order(sell2);
     orderBook.add_order(sell3);
-    
+    orderBook.add_order(sell4);
+
     cout << "==========Book state after adding sell orders:==========" << endl;
     cout << "" << endl;
     orderBook.print_book(10);
     cout << endl;
+
+
+    // Test 3: Test snapshot functionality
+    cout << "3. Testing snapshot functionality:" << endl;
+    vector<PriceLevel> bids, asks;
+    orderBook.get_snapshot(4, bids, asks);
+
+    cout << "==========Top 4 Aggregated Bids:==========" << endl;
+    cout << "" << endl;
+    for (const auto& bid : bids) {
+        cout << "  Price: " << bid.price << ", Quantity: " << bid.qty << endl;
+    }
     
-    // Test 3: Add a sell order that will match
-    cout << "3. Adding a sell order (id: 2004, qty: 50, price: 50.25) that should match:" << endl;
+    cout << "==========Top 4 Aggregated Asks:==========" << endl;
+    cout << "" << endl;
+    for (const auto& ask : asks) {
+        cout << "  Price: " << ask.price << ", Quantity: " << ask.qty << endl;
+    }
+    cout << endl;
+    
+    // Test 4: Add a sell order that will match
+    cout << "4. Adding a sell order (id: 2004, qty: 50, price: 50.25) that should match:" << endl;
     Order sell_match = {50, 2004, 50.25, false, 1000000006}; // Sell 50 @ 50.25
     orderBook.add_order(sell_match);
     
@@ -239,8 +306,8 @@ int main(){
     orderBook.print_book(10);
     cout << endl;
     
-    // Test 4: Test order cancellation
-    cout << "4. Testing order cancellation:" << endl;
+    // Test 5: Test order cancellation
+    cout << "5. Testing order cancellation:" << endl;
     cout << "Canceling order ID 1001..." << endl;
     bool cancelled = orderBook.cancel_order(1001);
     cout << "Cancellation " << (cancelled ? "successful" : "failed") << endl;
@@ -254,8 +321,8 @@ int main(){
     orderBook.print_book(10);
     cout << endl;
     
-    // Test 5: Test order amendment
-    cout << "5. Testing order amendment:" << endl;
+    // Test 6: Test order amendment
+    cout << "6. Testing order amendment:" << endl;
     cout << "Amending order (for ID 1002) - changing price to 49.75 and quantity to 300..." << endl;
     bool amended = orderBook.amend_order(1002, 49.75, 300);
     cout << "Amendment " << (amended ? "successful" : "failed") << endl;
@@ -263,24 +330,6 @@ int main(){
     cout << "==========Book state after amendment:==========" << endl;
     cout << "" << endl;
     orderBook.print_book(10);
-    cout << endl;
-    
-    // Test 6: Test snapshot functionality
-    cout << "6. Testing snapshot functionality:" << endl;
-    vector<PriceLevel> bids, asks;
-    orderBook.get_snapshot(3, bids, asks);
-    
-    cout << "==========Top 3 Bids:==========" << endl;
-    cout << "" << endl;
-    for (const auto& bid : bids) {
-        cout << "  Price: " << bid.price << ", Quantity: " << bid.qty << endl;
-    }
-    
-    cout << "==========Top 3 Asks:==========" << endl;
-    cout << "" << endl;
-    for (const auto& ask : asks) {
-        cout << "  Price: " << ask.price << ", Quantity: " << ask.qty << endl;
-    }
     cout << endl;
     
     // Test 7: Add more orders to trigger more matches
