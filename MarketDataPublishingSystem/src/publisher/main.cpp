@@ -50,6 +50,7 @@
 #include <random>        // random price generation
 #include <atomic>        // atomic flag for shutdown
 #include <cstdlib>       // exit codes
+#include <poll.h>        // poll() for non-blocking accept
 
 #include <nlohmann/json.hpp>  // JSON serialization
 
@@ -226,17 +227,16 @@ int main(int argc, char* argv[]) {
         mds::log_info("Ring buffer initialized (capacity: {} messages)", RingBuffer::capacity());
 
         // ====================================================================
-        // Step 2: Create TCP server
+        // Step 2: Create TCP server (non-blocking accept)
         // ====================================================================
         mds::log_info("Starting TCP server on {}:{}...", mds::LOOPBACK_ADDR, port);
 
         mds::TCPServer server(port);
 
-        mds::log_info("Waiting for TCP client to connect...");
-        mds::log_info("(Start the tcp_consumer in another terminal)");
+        // TCP client fd (-1 means no client connected yet)
+        int client_fd = -1;
 
-        // Wait for a client to connect (blocking)
-        int client_fd = server.accept_client();
+        mds::log_info("TCP server ready (client connection is optional)");
 
         // ====================================================================
         // Step 3: Create market data generator
@@ -245,6 +245,8 @@ int main(int argc, char* argv[]) {
         MarketDataGenerator generator("RELIANCE", 2850.0);
 
         mds::log_info("Starting to publish market data...");
+        mds::log_info("SHM Consumer can connect now!");
+        mds::log_info("TCP Consumer can connect anytime to {}:{}", mds::LOOPBACK_ADDR, port);
         mds::log_info("Press Ctrl+C to stop");
         mds::log_info("-------------------------------------------");
 
@@ -256,11 +258,33 @@ int main(int argc, char* argv[]) {
         uint64_t tcp_send_failures = 0;
 
         while (g_running) {
+            // ----------------------------------------------------------------
+            // Check for new TCP client connection (non-blocking)
+            // ----------------------------------------------------------------
+            if (client_fd < 0) {
+                // Use poll() to check if a client is trying to connect
+                struct pollfd pfd;
+                pfd.fd = server.fd();
+                pfd.events = POLLIN;  // Check for incoming connections
+
+                // poll with 0 timeout = non-blocking check
+                int poll_result = poll(&pfd, 1, 0);
+                if (poll_result > 0 && (pfd.revents & POLLIN)) {
+                    // Client is trying to connect - accept it
+                    try {
+                        client_fd = server.accept_client();
+                        mds::log_info("TCP client connected! Now sending to both SHM and TCP.");
+                    } catch (const std::exception& e) {
+                        mds::log_error("Failed to accept client: {}", e.what());
+                    }
+                }
+            }
+
             // Generate market data
             mds::MarketData data = generator.generate();
 
             // ----------------------------------------------------------------
-            // Publish to Shared Memory (for Process B)
+            // Publish to Shared Memory (for Process B) - ALWAYS
             // ----------------------------------------------------------------
             if (!shm->push(data)) {
                 // Buffer full - consumer not keeping up
@@ -272,20 +296,17 @@ int main(int argc, char* argv[]) {
             }
 
             // ----------------------------------------------------------------
-            // Publish to TCP (for Process C)
+            // Publish to TCP (for Process C) - ONLY IF CLIENT CONNECTED
             // ----------------------------------------------------------------
-            std::string json_str = to_json(data);
-            ssize_t sent = mds::TCPServer::send_data(client_fd, json_str.c_str(), json_str.size());
+            if (client_fd >= 0) {
+                std::string json_str = to_json(data);
+                ssize_t sent = mds::TCPServer::send_data(client_fd, json_str.c_str(), json_str.size());
 
-            if (sent < 0) {
-                tcp_send_failures++;
-                if (tcp_send_failures == 1) {
-                    mds::log_error("TCP send failed: {} - client disconnected?", strerror(errno));
-                    // Client disconnected - wait for new client
+                if (sent < 0) {
+                    tcp_send_failures++;
+                    mds::log_error("TCP send failed - client disconnected");
                     mds::TCPServer::close_client(client_fd);
-                    mds::log_info("Waiting for new TCP client...");
-                    client_fd = server.accept_client();
-                    tcp_send_failures = 0;
+                    client_fd = -1;  // Mark as disconnected, will try to accept new client
                 }
             }
 
@@ -294,8 +315,8 @@ int main(int argc, char* argv[]) {
             // ----------------------------------------------------------------
             message_count++;
             if (message_count % 10000 == 0) {
-                mds::log_info("Published {} messages (SHM failures: {}, TCP failures: {})",
-                             message_count, shm_push_failures, tcp_send_failures);
+                mds::log_info("Published {} messages (SHM failures: {}, TCP failures: {}, TCP connected: {})",
+                             message_count, shm_push_failures, tcp_send_failures, client_fd >= 0 ? "yes" : "no");
             }
 
             // ----------------------------------------------------------------
@@ -315,7 +336,9 @@ int main(int argc, char* argv[]) {
         mds::log_info("SHM push failures: {}", shm_push_failures);
         mds::log_info("TCP send failures: {}", tcp_send_failures);
 
-        mds::TCPServer::close_client(client_fd);
+        if (client_fd >= 0) {
+            mds::TCPServer::close_client(client_fd);
+        }
 
         // SharedMemory destructor will unlink the shared memory
 
